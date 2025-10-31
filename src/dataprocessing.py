@@ -1,19 +1,47 @@
 import pandas as pd 
 import numpy as np
 
-def read_data(building: str) -> pd.DataFrame:
+def read_data(building: str, reindex: bool = True) -> pd.DataFrame:
     """Reads the CSV data file into a pandas DataFrame."""
     weather_observed = pd.read_parquet(f'../data/raw/{building}/X_train_observed.parquet')
     weather_predicted = pd.read_parquet(f'../data/raw/{building}/X_train_estimated.parquet')
     weather = pd.concat((weather_observed, weather_predicted), axis = 0)
-    weather = weather.set_index("date_forecast")
-    weather = weather.drop(columns = "date_calc")
 
-    target = pd.read_parquet(f'../data/raw/{building}/train_targets.parquet').set_index("time")
 
-    return pd.concat((weather, target), axis=1)
+    if reindex:
+        weather = weather.set_index("date_forecast")
+        weather = weather.drop(columns = "date_calc")
+        target = pd.read_parquet(f'../data/raw/{building}/train_targets.parquet').set_index("time")
 
-def get_most_correlated_matrix(corr_matrix: pd.DataFrame, threshold: float) -> pd.DataFrame:
+        return pd.concat((weather, target), axis=1)
+
+    # re-index is only used for eda. For model use, we use integer index and process later
+    else:
+        weather_observed["forecast"] = '0'
+        weather_predicted["forecast"] = '1'
+
+        weather['building'] = building
+
+        target = pd.read_parquet(f'../data/raw/{building}/train_targets.parquet')
+        return weather.merge(target, left_on='date_forecast', right_on='time', how='inner').drop(columns=['date_calc', 'time'])
+
+def get_correlation_matrix(data: pd.DataFrame, method: str = 'kendall') -> pd.DataFrame:
+    """
+    Calculate the correlation matrix of the given DataFrame using the specified method.
+
+    Parameters:
+    data (pd.DataFrame): The input DataFrame.
+    method (str): The correlation method to use ('pearson', 'kendall', 'spearman').
+
+    Returns:
+    pd.DataFrame: The correlation matrix.
+    """
+    correlation_matrix = data.corr(method=method)
+    correlation_matrix.dropna(thresh=2, inplace=True)
+    correlation_matrix.dropna(axis=1, thresh=2, inplace=True)
+    return correlation_matrix
+
+def get_most_correlated_matrix(corr_matrix: pd.DataFrame, threshold: float, target_feature: str = 'pv_measurement') -> pd.DataFrame:
     """
     Get a list of features that have a correlation above the specified threshold.
 
@@ -24,11 +52,15 @@ def get_most_correlated_matrix(corr_matrix: pd.DataFrame, threshold: float) -> p
     Returns:
     pd.DataFrame: List of feature names with correlation above the threshold.
     """
-    correlated_features = corr_matrix[corr_matrix.abs() >= threshold].index.tolist()
-    uncorrelated_featr = corr_matrix[corr_matrix.abs() < threshold].index.tolist()
-    print(correlated_features)
+    target_corr = corr_matrix[target_feature].abs()
 
-    return corr_matrix.drop(columns=uncorrelated_featr)
+    # Find features with correlation above the threshold
+    features_to_keep = target_corr[target_corr >= threshold].index.tolist()
+
+    # Filter the correlation matrix to keep only the selected features
+    filtered_corr_matrix = corr_matrix.loc[features_to_keep, features_to_keep]
+
+    return filtered_corr_matrix
 
 
 def filter_correlation_matrix(corr_matrix: pd.DataFrame, threshold: float, target_feature: str = 'pv_measurement', drop_low_corr: bool = True) -> pd.DataFrame:
